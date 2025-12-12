@@ -79,7 +79,7 @@ function loadTimers() {
 }
 
 // =====================
-//     Crear timers
+//     Crear timers con advertencias
 // =====================
 async function createTimer(boss, ms, warn10Sent = false, warn5Sent = false) {
   const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
@@ -163,8 +163,8 @@ client.on('interactionCreate', async interaction => {
 
       const ms = bosses[boss] * 60 * 60 * 1000;
 
-      try { await interaction.deferReply({ ephemeral: true }); } catch { /* interacción expirada */ }
-      try { await interaction.editReply({ content: `✅ **${boss.toUpperCase()} registrado como muerto.**` }); } catch { /* falló, interacción expirada */ }
+      try { await interaction.deferReply({ ephemeral: true }); } catch {}
+      try { await interaction.editReply({ content: `✅ **${boss.toUpperCase()} registrado como muerto.**` }); } catch {}
 
       const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
       if (channel) channel.send(`⏳ **${boss.toUpperCase()}** ha sido marcado como muerto. Respawn en **${bosses[boss]} horas**.`);
@@ -186,7 +186,7 @@ client.on('interactionCreate', async interaction => {
         reply += `⏳ **${b.toUpperCase()}** respawnea en ${h}h ${m}m\n`;
       }
 
-      try { await interaction.reply({ content: reply || 'No hay bosses activos.', ephemeral: true }); } catch { /* interacción expirada */ }
+      try { await interaction.reply({ content: reply || 'No hay bosses activos.', ephemeral: true }); } catch {}
     }
   } catch (err) {
     console.error('Error manejando interacción:', err);
