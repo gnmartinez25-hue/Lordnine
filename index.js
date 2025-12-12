@@ -1,6 +1,5 @@
 require('dotenv').config();
 const fs = require('fs');
-const path = require('path');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 
 const TOKEN = process.env.TOKEN;
@@ -17,6 +16,9 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
 });
 
+// =====================
+//     BOSS LISTA
+// =====================
 const bosses = {
   venatus: 10,
   viorent: 10,
@@ -43,50 +45,67 @@ const bosses = {
   secreta: 62
 };
 
-const timersFile = path.join(__dirname, 'timers.json');
-let activeTimers = {};
+// =====================
+//     Archivos
+// =====================
+const timersFile = './timers.json';
+let activeTimers = {}; // en memoria
 
 // =====================
-// Guardar timers en archivo
+//     Guardar timers
 // =====================
 function saveTimers() {
-  fs.writeFileSync(timersFile, JSON.stringify(activeTimers, null, 2));
+  const cleanTimers = {};
+  for (const boss in activeTimers) {
+    const { endTime, warn10Sent, warn5Sent } = activeTimers[boss];
+    cleanTimers[boss] = { endTime, warn10Sent, warn5Sent };
+  }
+  fs.writeFileSync(timersFile, JSON.stringify(cleanTimers, null, 2));
 }
 
 // =====================
-// Crear timers en memoria
+//     Cargar timers
 // =====================
-async function createTimer(boss, endTime, warn10Sent = false, warn5Sent = false) {
+function loadTimers() {
+  if (!fs.existsSync(timersFile)) return;
+  const data = JSON.parse(fs.readFileSync(timersFile));
+  const now = Date.now();
+  for (const boss in data) {
+    const timerData = data[boss];
+    const remaining = timerData.endTime - now;
+    if (remaining <= 0) continue; // ya respawneo
+    createTimer(boss, remaining, timerData.warn10Sent, timerData.warn5Sent);
+  }
+}
+
+// =====================
+//     Crear timers
+// =====================
+async function createTimer(boss, ms, warn10Sent = false, warn5Sent = false) {
   const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
   if (!channel) return;
 
-  const now = Date.now();
-  const msRemaining = endTime - now;
-  if (msRemaining <= 0) {
-    channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
-    delete activeTimers[boss];
-    saveTimers();
-    return;
-  }
+  activeTimers[boss] = { endTime: Date.now() + ms, warn10Sent, warn5Sent };
 
-  activeTimers[boss] = { endTime, warn10Sent, warn5Sent };
-
-  // Aviso 10 min
-  if (!warn10Sent && msRemaining > 10 * 60 * 1000) {
+  // Aviso 10 minutos antes
+  if (!warn10Sent && ms > 10 * 60 * 1000) {
     activeTimers[boss].warn10 = setTimeout(() => {
-      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en **10 minutos**!`);
+      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en 10 minutos!`);
       activeTimers[boss].warn10Sent = true;
       saveTimers();
-    }, msRemaining - 10 * 60 * 1000);
+    }, ms - 10 * 60 * 1000);
+  } else if (!warn10Sent) {
+    channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en menos de 10 minutos!`);
+    activeTimers[boss].warn10Sent = true;
   }
 
-  // Aviso 5 min
-  if (!warn5Sent && msRemaining > 5 * 60 * 1000) {
+  // Aviso 5 minutos antes
+  if (!warn5Sent && ms > 5 * 60 * 1000) {
     activeTimers[boss].warn5 = setTimeout(() => {
-      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en **5 minutos**!`);
+      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en 5 minutos!`);
       activeTimers[boss].warn5Sent = true;
       saveTimers();
-    }, msRemaining - 5 * 60 * 1000);
+    }, ms - 5 * 60 * 1000);
   }
 
   // Respawn
@@ -94,22 +113,13 @@ async function createTimer(boss, endTime, warn10Sent = false, warn5Sent = false)
     channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
     delete activeTimers[boss];
     saveTimers();
-  }, msRemaining);
+  }, ms);
+
+  saveTimers();
 }
 
 // =====================
-// Al iniciar, cargar timers del archivo
-// =====================
-if (fs.existsSync(timersFile)) {
-  const saved = JSON.parse(fs.readFileSync(timersFile));
-  for (const boss in saved) {
-    const { endTime, warn10Sent, warn5Sent } = saved[boss];
-    createTimer(boss, endTime, warn10Sent, warn5Sent);
-  }
-}
-
-// =====================
-// Comandos slash
+//     Comandos slash
 // =====================
 const commands = [
   new SlashCommandBuilder()
@@ -123,7 +133,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('time')
-    .setDescription('Ver tiempo restante para todos los bosses activos')
+    .setDescription('Ver tiempo restante para cada boss')
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
@@ -138,54 +148,54 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 })();
 
 // =====================
-// Lógica del bot
+//     Lógica del bot
 // =====================
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
-  if (!channel) return;
+  const boss = interaction.options.getString('boss');
 
-  if (interaction.commandName === 'kill') {
-    const boss = interaction.options.getString('boss');
-    const hours = bosses[boss];
-    if (!hours) return interaction.reply({ content: 'Boss no configurado.', ephemeral: true });
+  try {
+    if (interaction.commandName === 'kill') {
+      if (!bosses[boss]) return await interaction.reply({ content: 'Boss no configurado.', ephemeral: true });
 
-    const now = Date.now();
-    const endTime = now + hours * 60 * 60 * 1000;
+      if (activeTimers[boss]) return await interaction.reply({ content: `❌ **${boss.toUpperCase()}** ya está activo.`, ephemeral: true });
 
-    // Evitar duplicados
-    if (activeTimers[boss]) {
-      return interaction.reply({ content: `❌ **${boss.toUpperCase()}** ya está activo.`, ephemeral: true });
+      const ms = bosses[boss] * 60 * 60 * 1000;
+
+      try { await interaction.deferReply({ ephemeral: true }); } catch { /* interacción expirada */ }
+      try { await interaction.editReply({ content: `✅ **${boss.toUpperCase()} registrado como muerto.**` }); } catch { /* falló, interacción expirada */ }
+
+      const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
+      if (channel) channel.send(`⏳ **${boss.toUpperCase()}** ha sido marcado como muerto. Respawn en **${bosses[boss]} horas**.`);
+
+      createTimer(boss, ms);
+
+    } else if (interaction.commandName === 'time') {
+      if (Object.keys(activeTimers).length === 0) {
+        return await interaction.reply({ content: 'No hay bosses activos.', ephemeral: true });
+      }
+
+      let reply = '';
+      const now = Date.now();
+      for (const b in activeTimers) {
+        const remaining = activeTimers[b].endTime - now;
+        if (remaining <= 0) continue;
+        const h = Math.floor(remaining / (1000 * 60 * 60));
+        const m = Math.floor((remaining % (1000 * 60 * 60)) / (1000 * 60));
+        reply += `⏳ **${b.toUpperCase()}** respawnea en ${h}h ${m}m\n`;
+      }
+
+      try { await interaction.reply({ content: reply || 'No hay bosses activos.', ephemeral: true }); } catch { /* interacción expirada */ }
     }
-
-    await createTimer(boss, endTime);
-    saveTimers();
-
-    await interaction.reply({ content: `✅ **${boss.toUpperCase()} registrado como muerto.**`, ephemeral: true });
-    channel.send(`⏳ **${boss.toUpperCase()}** ha sido marcado como muerto. Respawn en **${hours} horas**.`);
-  }
-
-  if (interaction.commandName === 'time') {
-    if (Object.keys(activeTimers).length === 0) {
-      return interaction.reply({ content: 'No hay bosses activos actualmente.', ephemeral: true });
-    }
-
-    let message = '';
-    const now = Date.now();
-    for (const boss in activeTimers) {
-      const remaining = activeTimers[boss].endTime - now;
-      const h = Math.floor(remaining / 3600000);
-      const m = Math.floor((remaining % 3600000) / 60000);
-      message += `⏳ **${boss.toUpperCase()}**: ${h}h ${m}m restantes\n`;
-    }
-
-    await interaction.reply({ content: message, ephemeral: true });
+  } catch (err) {
+    console.error('Error manejando interacción:', err);
   }
 });
 
-client.once('ready', () => {
+client.once('clientReady', () => {
   console.log(`Bot listo como ${client.user.tag}`);
+  loadTimers(); // reconstruye timers al iniciar
 });
 
 client.login(TOKEN);
