@@ -13,23 +13,10 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID || !CHANNEL_ID) {
   process.exit(1);
 }
 
-// Archivo para persistir timers
-const TIMERS_FILE = path.join(__dirname, 'timers.json');
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+});
 
-// Cargar timers guardados
-let activeTimers = {};
-try {
-  if (fs.existsSync(TIMERS_FILE)) {
-    const data = fs.readFileSync(TIMERS_FILE, 'utf8');
-    activeTimers = JSON.parse(data);
-  }
-} catch (err) {
-  console.error("Error leyendo timers.json:", err);
-}
-
-// =====================
-//     BOSS LISTA
-// =====================
 const bosses = {
   venatus: 10,
   viorent: 10,
@@ -56,78 +43,73 @@ const bosses = {
   secreta: 62
 };
 
+const timersFile = path.join(__dirname, 'timers.json');
+let activeTimers = {};
+
 // =====================
-//  Funciones de ayuda
+// Guardar timers en archivo
 // =====================
 function saveTimers() {
-  fs.writeFileSync(TIMERS_FILE, JSON.stringify(activeTimers, null, 2));
+  fs.writeFileSync(timersFile, JSON.stringify(activeTimers, null, 2));
 }
 
-function getRemainingTime(endTimestamp) {
-  const now = Date.now();
-  const diff = endTimestamp - now;
-  if (diff <= 0) return "0h 0m";
-  const h = Math.floor(diff / 3600000);
-  const m = Math.floor((diff % 3600000) / 60000);
-  return `${h}h ${m}m`;
-}
-
-// Reconstruir timers al iniciar
-async function rebuildTimers(client) {
+// =====================
+// Crear timers en memoria
+// =====================
+async function createTimer(boss, endTime, warn10Sent = false, warn5Sent = false) {
   const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
   if (!channel) return;
 
-  for (const boss in activeTimers) {
-    const timerData = activeTimers[boss];
-    const now = Date.now();
-    const remaining = timerData.end - now;
+  const now = Date.now();
+  const msRemaining = endTime - now;
+  if (msRemaining <= 0) {
+    channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
+    delete activeTimers[boss];
+    saveTimers();
+    return;
+  }
 
-    if (remaining <= 0) {
-      channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
-      delete activeTimers[boss];
+  activeTimers[boss] = { endTime, warn10Sent, warn5Sent };
+
+  // Aviso 10 min
+  if (!warn10Sent && msRemaining > 10 * 60 * 1000) {
+    activeTimers[boss].warn10 = setTimeout(() => {
+      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en **10 minutos**!`);
+      activeTimers[boss].warn10Sent = true;
       saveTimers();
-      continue;
-    }
+    }, msRemaining - 10 * 60 * 1000);
+  }
 
-    // Warn 10 min
-    if (remaining > 10 * 60 * 1000) {
-      timerData.warn10Timeout = setTimeout(() => {
-        channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en 10 minutos!`);
-      }, remaining - 10 * 60 * 1000);
-    } else {
-      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en menos de 10 minutos!`);
-    }
-
-    // Warn 5 min
-    if (remaining > 5 * 60 * 1000) {
-      timerData.warn5Timeout = setTimeout(() => {
-        channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en 5 minutos!`);
-      }, remaining - 5 * 60 * 1000);
-    }
-
-    // Respawn
-    timerData.fullTimeout = setTimeout(() => {
-      channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
-      delete activeTimers[boss];
+  // Aviso 5 min
+  if (!warn5Sent && msRemaining > 5 * 60 * 1000) {
+    activeTimers[boss].warn5 = setTimeout(() => {
+      channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en **5 minutos**!`);
+      activeTimers[boss].warn5Sent = true;
       saveTimers();
-    }, remaining);
+    }, msRemaining - 5 * 60 * 1000);
+  }
+
+  // Respawn
+  activeTimers[boss].full = setTimeout(() => {
+    channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
+    delete activeTimers[boss];
+    saveTimers();
+  }, msRemaining);
+}
+
+// =====================
+// Al iniciar, cargar timers del archivo
+// =====================
+if (fs.existsSync(timersFile)) {
+  const saved = JSON.parse(fs.readFileSync(timersFile));
+  for (const boss in saved) {
+    const { endTime, warn10Sent, warn5Sent } = saved[boss];
+    createTimer(boss, endTime, warn10Sent, warn5Sent);
   }
 }
 
 // =====================
-//     Cliente Discord
-// =====================
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
-});
-
-client.once('ready', async () => {
-  console.log(`Bot listo como ${client.user.tag}`);
-  await rebuildTimers(client);
-});
-
-// =====================
-//   Registrar comandos
+// Comandos slash
 // =====================
 const commands = [
   new SlashCommandBuilder()
@@ -138,19 +120,11 @@ const commands = [
          .setDescription('Nombre del boss')
          .setRequired(true)
          .addChoices(...Object.keys(bosses).map(b => ({ name: b.replace(/_/g, ' ').toUpperCase(), value: b })))
-    )
-    .toJSON(),
+    ),
   new SlashCommandBuilder()
     .setName('time')
-    .setDescription('Ver cuánto falta para que aparezca un boss')
-    .addStringOption(opt =>
-      opt.setName('boss')
-         .setDescription('Nombre del boss')
-         .setRequired(true)
-         .addChoices(...Object.keys(bosses).map(b => ({ name: b.replace(/_/g, ' ').toUpperCase(), value: b })))
-    )
-    .toJSON()
-];
+    .setDescription('Ver tiempo restante para todos los bosses activos')
+].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
 (async () => {
@@ -164,66 +138,54 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 })();
 
 // =====================
-//     Lógica del bot
+// Lógica del bot
 // =====================
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  const boss = interaction.options.getString('boss');
+  const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
+  if (!channel) return;
 
-  // --- /time ---
-  if (interaction.commandName === 'time') {
-    const timerData = activeTimers[boss];
-    const remaining = timerData ? getRemainingTime(timerData.end) : null;
-    return interaction.reply({
-      content: remaining ? `⏳ **${boss.toUpperCase()}** respawnea en ${remaining}` : `❌ ${boss.toUpperCase()} no está activo.`,
-      ephemeral: true
-    });
-  }
-
-  // --- /kill ---
   if (interaction.commandName === 'kill') {
-    if (activeTimers[boss]) {
-      return interaction.reply({ content: `❌ ${boss.toUpperCase()} ya está activo.`, ephemeral: true });
-    }
-
+    const boss = interaction.options.getString('boss');
     const hours = bosses[boss];
     if (!hours) return interaction.reply({ content: 'Boss no configurado.', ephemeral: true });
 
-    const ms = hours * 60 * 60 * 1000;
-    const endTimestamp = Date.now() + ms;
+    const now = Date.now();
+    const endTime = now + hours * 60 * 60 * 1000;
 
-    // Respuesta inmediata
-    await interaction.reply({ content: `✅ **${boss.toUpperCase()} registrado como muerto.**`, ephemeral: true });
+    // Evitar duplicados
+    if (activeTimers[boss]) {
+      return interaction.reply({ content: `❌ **${boss.toUpperCase()}** ya está activo.`, ephemeral: true });
+    }
 
-    const channel = await client.channels.fetch(CHANNEL_ID).catch(() => null);
-    if (channel) channel.send(`⏳ **${boss.toUpperCase()}** ha sido marcado como muerto. Respawn en **${hours} horas**.`);
-
-    // Guardar en memoria y archivo
-    activeTimers[boss] = { end: endTimestamp };
+    await createTimer(boss, endTime);
     saveTimers();
 
-    // Timers públicos
-    if (ms > 10 * 60 * 1000) {
-      activeTimers[boss].warn10Timeout = setTimeout(() => {
-        if (channel) channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en 10 minutos!`);
-      }, ms - 10 * 60 * 1000);
-    } else {
-      if (channel) channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en menos de 10 minutos!`);
-    }
-
-    if (ms > 5 * 60 * 1000) {
-      activeTimers[boss].warn5Timeout = setTimeout(() => {
-        if (channel) channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en 5 minutos!`);
-      }, ms - 5 * 60 * 1000);
-    }
-
-    activeTimers[boss].fullTimeout = setTimeout(() => {
-      if (channel) channel.send(`💥 @everyone **${boss.toUpperCase()} ha respawneado!**`);
-      delete activeTimers[boss];
-      saveTimers();
-    }, ms);
+    await interaction.reply({ content: `✅ **${boss.toUpperCase()} registrado como muerto.**`, ephemeral: true });
+    channel.send(`⏳ **${boss.toUpperCase()}** ha sido marcado como muerto. Respawn en **${hours} horas**.`);
   }
+
+  if (interaction.commandName === 'time') {
+    if (Object.keys(activeTimers).length === 0) {
+      return interaction.reply({ content: 'No hay bosses activos actualmente.', ephemeral: true });
+    }
+
+    let message = '';
+    const now = Date.now();
+    for (const boss in activeTimers) {
+      const remaining = activeTimers[boss].endTime - now;
+      const h = Math.floor(remaining / 3600000);
+      const m = Math.floor((remaining % 3600000) / 60000);
+      message += `⏳ **${boss.toUpperCase()}**: ${h}h ${m}m restantes\n`;
+    }
+
+    await interaction.reply({ content: message, ephemeral: true });
+  }
+});
+
+client.once('ready', () => {
+  console.log(`Bot listo como ${client.user.tag}`);
 });
 
 client.login(TOKEN);
