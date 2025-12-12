@@ -1,7 +1,11 @@
 require('dotenv').config();
 const fs = require('fs');
+const express = require('express');
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 
+// =====================
+// Variables de entorno
+// =====================
 const TOKEN = process.env.TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const GUILD_ID = process.env.GUILD_ID;
@@ -12,12 +16,33 @@ if (!TOKEN || !CLIENT_ID || !GUILD_ID || !CHANNEL_ID) {
   process.exit(1);
 }
 
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent]
+// =====================
+// Servidor web mínimo para mantener vivo Render
+// =====================
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+  res.send('Bot Lordnine está online ✅');
+});
+
+app.listen(PORT, () => {
+  console.log(`Servidor web escuchando en puerto ${PORT}`);
 });
 
 // =====================
-//     BOSS LISTA
+// Bot de Discord
+// =====================
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
+  ]
+});
+
+// =====================
+// Lista de bosses
 // =====================
 const bosses = {
   venatus: 10,
@@ -43,7 +68,6 @@ const bosses = {
   ordo: 62,
   guild_boss: 1,
   secreta: 62
-  
 };
 
 // Timers activos en memoria
@@ -54,7 +78,7 @@ client.once('ready', () => {
 });
 
 // =====================
-//   Registrar slash command (en el servidor)
+// Registrar slash commands en el servidor
 // =====================
 const commands = [
   new SlashCommandBuilder()
@@ -69,6 +93,7 @@ const commands = [
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(TOKEN);
+
 (async () => {
   try {
     console.log('Registrando comandos en el servidor...');
@@ -80,7 +105,7 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 })();
 
 // =====================
-//     Lógica del bot
+// Lógica del bot
 // =====================
 client.on('interactionCreate', async interaction => {
   if (!interaction.isChatInputCommand()) return;
@@ -111,7 +136,6 @@ client.on('interactionCreate', async interaction => {
       channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en **10 minutos**!`);
     }, ms - (10 * 60 * 1000));
   } else {
-    // si ya falta menos, manda aviso inmediato
     channel.send(`⚠️ @everyone **${boss.toUpperCase()}** respawnea en menos de 10 minutos!`);
   }
 
